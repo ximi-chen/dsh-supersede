@@ -1,9 +1,10 @@
 /**
  * Client half of @local/dsh-supersede.
  *
- * Ticket 01 scope: one compact per-session 「接替」 switch in the composer's left
- * tool row, remembered in localStorage. The switch does not change delivery yet;
- * later tickets add the queue trigger, the turn marker, and the gates.
+ * Ticket 03: the switch is live. While it is on and the session is running, the
+ * first observed `next-turn` queue row cancels the running turn; the Host keeps
+ * the inbox, so that row opens the next turn by itself. The turn marker and the
+ * busy-Enter / failure gates belong to later tickets.
  *
  * This is a classic script on purpose: the browser registers a lazy factory with
  * the shell's module loader and a bundle without a build step can only require
@@ -43,13 +44,20 @@ window.__ModuleLoader__.load({
     // Per-session state
     //
     // The only persisted value is `enabled`, stored per session under
-    // `dsh-supersede:enabled:<sessionId>`; a missing key means off. Everybody
-    // else (queue bookkeeping, cancel flags) stays in this module's memory.
-    // Later tickets extend the record here instead of rewriting the switch.
+    // `dsh-supersede:enabled:<sessionId>`; a missing key means off. The queue
+    // bookkeeping (`seen`) and the one-cancel-at-a-time flag (`inFlight`) stay
+    // in this module's memory, so a reload starts from a blank verdict.
     // =======================================================================
     const STORAGE_PREFIX = 'dsh-supersede:enabled:'
 
-    /** sessionId (string) -> { enabled: boolean }; hydrated lazily, page-local. */
+    /**
+     * sessionId (string) -> record; hydrated lazily, page-local.
+     * `seen` holds every queue id already judged; `primed` says the first
+     * observation of this page/plugin load already ran (its rows are a
+     * baseline, never a supersede request); `inFlight` says one cancel request
+     * is outstanding for this session.
+     * @typedef {{ enabled: boolean, seen: Set<string>, primed: boolean, inFlight: boolean }} SessionRecord
+     */
     const sessions = new Map()
     /** Components watching the map; one notification per change, no payload. */
     const watchers = new Set()
@@ -87,13 +95,13 @@ window.__ModuleLoader__.load({
 
     /**
      * @param {unknown} sessionId
-     * @returns {{ enabled: boolean }}
+     * @returns {SessionRecord}
      */
     function stateOf(sessionId) {
       const key = String(sessionId)
       let state = sessions.get(key)
       if (state === undefined) {
-        state = { enabled: readStoredEnabled(key) }
+        state = { enabled: readStoredEnabled(key), seen: new Set(), primed: false, inFlight: false }
         sessions.set(key, state)
       }
       return state
@@ -243,17 +251,91 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Session-scoped supersede switch.
-     * Receives the standard session props plus the locale seat (`t`); the
+     * Session-scoped supersede switch and its queue trigger.
+     * Receives the standard session props (`useInput`, `useSession`, `useAccess`)
+     * plus the locale seat (`t`) and this entry's injected face: the decision
+     * core, the busy-Enter snapshot face, and the per-session `cancelTurn`. The
      * injected `translate` is the same namespace's bound translator, kept as a
      * fallback because a `t` prop cannot be injected over the locale seat.
      * @param {object} props
      * @returns {object | null}
      */
     function SupersedeToggle(props) {
-      const { sessionId } = props
+      const { sessionId, core, busyEnter, useInput, useSession, useAccess } = props
       const t = props.t ?? props.translate
       const enabled = useSessionEnabled(sessionId)
+
+      // Busy-Enter is a settings snapshot, not a hook context, so the plain
+      // service shape feeds `useSyncExternalStore` directly.
+      const busyEnterBehavior = React.useSyncExternalStore(
+        busyEnter.subscribe,
+        busyEnter.getSnapshot,
+      )
+      const queue = useInput((state) => state.queue)
+      const running = useSession((state) => state.running) ?? false
+      const denied = useAccess('session/cancel') === false
+
+      // The injected `cancelTurn` closes over one session, so it can be a fresh
+      // closure on every render; a ref keeps it out of the observation deps.
+      const cancelTurn = React.useRef(props.cancelTurn)
+      cancelTurn.current = props.cancelTurn
+
+      // One verdict per observed snapshot. Everything written here is module
+      // memory, never React state, so a verdict cannot schedule a render, and
+      // a render never cancels by itself.
+      React.useEffect(() => {
+        if (sessionId === undefined || sessionId === null) return
+
+        const state = stateOf(sessionId)
+        if (!state.primed) {
+          // First observation after this page/plugin load: rows already in the
+          // Host inbox were queued before the plugin watched, so they are a
+          // baseline (normally empty). Record them and never retroactively fire.
+          state.primed = true
+          state.seen = new Set((queue ?? []).map((row) => row.id))
+          return
+        }
+
+        const decision = core.decideSupersede({
+          enabled,
+          busyEnter: busyEnterBehavior,
+          running,
+          canCancel: !denied,
+          queue: queue ?? [],
+          seen: state.seen,
+          cancelInFlight: state.inFlight,
+        })
+        // The decision's `seen` is the whole observed snapshot, so this records
+        // every id and resets the set when the queue empties. Ids are recorded
+        // even when nothing is cancelled: flipping the switch later must not
+        // retroactively fire on rows that were already queued.
+        state.seen = new Set(decision.seen)
+        if (!decision.cancel) return
+
+        state.inFlight = true
+        let request
+        try {
+          request = cancelTurn.current()
+        } catch (error) {
+          console.warn('dsh-supersede: cancel failed', error)
+          state.inFlight = false
+          return
+        }
+        // Fire and settle: never await here, never retry. The Host keeps the
+        // inbox, so the queued message opens the next turn on its own.
+        Promise.resolve(request)
+          .then((result) => {
+            if (result !== undefined && result !== null && result.ok === false) {
+              console.warn('dsh-supersede: cancel failed', result.error && result.error.code)
+            }
+          })
+          .catch((error) => {
+            console.warn('dsh-supersede: cancel failed', error)
+          })
+          .finally(() => {
+            state.inFlight = false
+          })
+      }, [queue, running, denied, enabled, busyEnterBehavior, sessionId])
 
       if (sessionId === undefined || sessionId === null) return null
 
@@ -294,21 +376,54 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'sessions', 'locale'],
+      inject: ['slots', 'sessions', 'locale', 'configForms'],
       /**
-       * Register the dictionaries and the one slot entry.
-       * The dictionaries live in this entry's `ctx.effect`, so unloading the
-       * plugin removes them; `ctx.slots.inject` owns the entry through the
-       * caller fiber's effect and disposes both the wait and the contribution.
+       * Load the decision core, then register the dictionaries and the switch.
+       * Nothing is registered before the chunk resolves: a missing chunk leaves
+       * stock DSH behaviour untouched (fail closed). The dictionaries live in
+       * this entry's `ctx.effect`, so unloading the plugin removes them;
+       * `ctx.slots.inject` owns the entry through the caller fiber's effect and
+       * disposes both the wait and the contribution.
        * @param {object} ctx client plugin context
-       * @returns {void}
+       * @returns {Promise<void>}
        */
-      apply(ctx) {
+      async apply(ctx) {
+        let core
+        try {
+          core = await require.async('./client.core.js')
+        } catch (error) {
+          console.warn('dsh-supersede: decision core failed to load', error)
+          return
+        }
+
         ctx.effect(
           () => ctx.locale.register(NS, { zh, en }),
           'dsh-supersede: dictionaries',
         )
         const t = ctx.locale.bind(NS)
+
+        // Busy-Enter is read once; two stable bound methods are all the slot
+        // component needs. `form.getSnapshot`/`form.subscribe` use `this`, so
+        // they are always called on the form object, never destructured.
+        const form = ctx.configForms.get('ui-conversation')
+        const busyEnter = {
+          subscribe: (listener) => form.subscribe(listener),
+          getSnapshot: () => form.getSnapshot().value?.busyEnter ?? 'queue',
+        }
+
+        /**
+         * Ask the session face to cancel the running turn.
+         * Never `ctx.conversation.cancel`: that path throws and records
+         * `promptError`. A missing binding is a local failure, not a throw.
+         * @param {unknown} sessionId
+         * @returns {Promise<object> | object} RemoteResult or a no-binding failure
+         */
+        const cancelTurn = (sessionId) => {
+          const binding = ctx.sessions.binding(sessionId)
+          if (binding === undefined) return { ok: false, error: { code: 'no-binding' } }
+          return binding.session.cancel()
+        }
+
         ctx.slots.inject(SLOT, () => ctx.slots.register({
           name: SLOT,
           id: ENTRY_ID,
@@ -317,7 +432,12 @@ window.__ModuleLoader__.load({
           // The locale seat already supplies `t`; injecting a prop named `t`
           // would instead throw on prop overlap. Carry the same bound
           // translator under a free name so the component never lacks one.
-          inject: () => ({ translate: t }),
+          inject: (sessionId) => ({
+            translate: t,
+            core,
+            busyEnter,
+            cancelTurn: () => cancelTurn(sessionId),
+          }),
         }, SupersedeToggle))
       },
     }
