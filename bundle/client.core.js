@@ -42,6 +42,67 @@ window.__ModuleLoader__.load({
       return { cancel: true, seen: ids, reason: DECISION_REASONS.cancel }
     }
 
-    return { decideSupersede, DECISION_REASONS }
+    // -----------------------------------------------------------------------
+    // Supersede ledger
+    //
+    // Vocabulary alone cannot tell our cancel from the Stop button: both close
+    // a turn with `turn/end` reason `aborted` / cause `user`. The only
+    // clock-free discriminator is identity — the turn that was open when the
+    // cancel was accepted. The client arms the ledger for that turn number;
+    // the marker then marks that turn, and only that turn, if it closed
+    // `aborted`. Any other reason for the armed turn disarms without a mark, so
+    // a later abort is not attributed to this supersede.
+    //
+    // Ledgers are immutable: every transition returns a new object, and an
+    // observation that changes nothing returns the same reference so the React
+    // layer can compare identity instead of deep values.
+    // -----------------------------------------------------------------------
+    const EMPTY_LEDGER = Object.freeze({
+      armedFor: null,
+      marked: Object.freeze([]),
+    })
+
+    /**
+     * Arm the ledger for the turn that was open when the cancel was accepted.
+     * Past marks are kept so one session can show several superseded turns.
+     * @param {{ armedFor: number | null, marked: readonly number[] }} ledger
+     * @param {number | null} turnNumber
+     * @returns {{ armedFor: number | null, marked: readonly number[] }}
+     */
+    function armLedger(ledger, turnNumber) {
+      return { armedFor: turnNumber, marked: ledger.marked }
+    }
+
+    /**
+     * Observe one closed turn. A mark is only released when the observation is
+     * about the exact armed turn and `turn/end` said `aborted`.
+     * @param {{ armedFor: number | null, marked: readonly number[] }} ledger
+     * @param {{ turn: number, reasonKind: string | undefined }} observed
+     * @returns {{ ledger: object, mark: boolean }}
+     */
+    function observeTurn(ledger, observed) {
+      if (ledger.armedFor === null || ledger.armedFor !== observed.turn) {
+        return { ledger, mark: false }
+      }
+      const mark = observed.reasonKind === 'aborted'
+      return {
+        ledger: {
+          armedFor: null,
+          marked: mark ? [...ledger.marked, observed.turn] : ledger.marked,
+        },
+        mark,
+      }
+    }
+
+    /**
+     * @param {{ armedFor: number | null, marked: readonly number[] }} ledger
+     * @param {number} turnNumber
+     * @returns {boolean}
+     */
+    function isMarked(ledger, turnNumber) {
+      return ledger.marked.includes(turnNumber)
+    }
+
+    return { decideSupersede, DECISION_REASONS, EMPTY_LEDGER, armLedger, observeTurn, isMarked }
   },
 })

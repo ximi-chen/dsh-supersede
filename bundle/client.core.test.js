@@ -15,6 +15,7 @@ const core = registration.factory(() => {
   throw new Error('the core must not require()')
 })
 const { decideSupersede, DECISION_REASONS } = core
+const { EMPTY_LEDGER, armLedger, observeTurn, isMarked } = core
 
 /** Build a plain snapshot; each test overrides only what it is about. */
 function snapshot(overrides = {}) {
@@ -188,4 +189,113 @@ test('does not mutate the frozen snapshot, its queue rows, or its seen set', () 
   assert.deepEqual(queueIds(input.queue), untouchedIds)
   assert.deepEqual([...input.seen], untouchedSeen)
   assert.equal(input.seen.size, untouchedSeen.length)
+})
+
+// ---------------------------------------------------------------------------
+// Ledger: which turn, if any, this session's supersede actually interrupted.
+//
+// `armLedger` records the turn that was open when a cancel was accepted.
+// `observeTurn` runs for closed turns as the marker renders them; it marks
+// exactly that armed turn, and only when `turn/end` said `aborted`.
+// ---------------------------------------------------------------------------
+
+test('ledger: arm for a turn, observe that turn closed aborted; it is marked and disarmed', () => {
+  const armed = armLedger(EMPTY_LEDGER, 3)
+  assert.equal(armed.armedFor, 3)
+
+  const { ledger, mark } = observeTurn(armed, { turn: 3, reasonKind: 'aborted' })
+
+  assert.equal(mark, true)
+  assert.deepEqual(ledger.marked, [3])
+  assert.equal(ledger.armedFor, null)
+  assert.equal(isMarked(ledger, 3), true)
+})
+
+test('ledger: a normal completion disarms without a mark, and a later abort is not marked', () => {
+  const armed = armLedger(EMPTY_LEDGER, 3)
+
+  const completed = observeTurn(armed, { turn: 3, reasonKind: 'completed' })
+  assert.equal(completed.mark, false)
+  assert.equal(completed.ledger.armedFor, null)
+  assert.deepEqual(completed.ledger.marked, [])
+
+  const laterAbort = observeTurn(completed.ledger, { turn: 4, reasonKind: 'aborted' })
+  assert.equal(laterAbort.mark, false)
+  assert.equal(laterAbort.ledger, completed.ledger)
+  assert.equal(isMarked(laterAbort.ledger, 4), false)
+})
+
+test('ledger: an aborted turn with no arm is never marked', () => {
+  const { ledger, mark } = observeTurn(EMPTY_LEDGER, { turn: 3, reasonKind: 'aborted' })
+
+  assert.equal(mark, false)
+  assert.equal(ledger, EMPTY_LEDGER)
+  assert.equal(isMarked(ledger, 3), false)
+})
+
+test('ledger: arming for one turn does not mark a different turn that aborts', () => {
+  const armed = armLedger(EMPTY_LEDGER, 3)
+
+  const other = observeTurn(armed, { turn: 4, reasonKind: 'aborted' })
+  assert.equal(other.mark, false)
+  assert.equal(other.ledger, armed)
+  assert.equal(other.ledger.armedFor, 3)
+  assert.equal(isMarked(other.ledger, 4), false)
+
+  // The armed turn is still the one that can be marked.
+  const own = observeTurn(other.ledger, { turn: 3, reasonKind: 'aborted' })
+  assert.equal(own.mark, true)
+  assert.equal(isMarked(own.ledger, 3), true)
+})
+
+test('ledger: observing the same marked turn again keeps one mark and the same ledger', () => {
+  const marked = observeTurn(armLedger(EMPTY_LEDGER, 3), {
+    turn: 3,
+    reasonKind: 'aborted',
+  }).ledger
+
+  const again = observeTurn(marked, { turn: 3, reasonKind: 'aborted' })
+
+  assert.equal(again.mark, false)
+  assert.equal(again.ledger, marked)
+  assert.deepEqual(again.ledger.marked, [3])
+})
+
+test('ledger: a second supersede marks a second turn and keeps the first mark', () => {
+  const first = observeTurn(armLedger(EMPTY_LEDGER, 3), {
+    turn: 3,
+    reasonKind: 'aborted',
+  }).ledger
+
+  const second = observeTurn(armLedger(first, 4), { turn: 4, reasonKind: 'aborted' })
+
+  assert.equal(second.mark, true)
+  assert.deepEqual(second.ledger.marked, [3, 4])
+  assert.equal(isMarked(second.ledger, 3), true)
+  assert.equal(isMarked(second.ledger, 4), true)
+})
+
+test('ledger: neither function mutates its ledger or the observed turn', () => {
+  const ledger = Object.freeze({ armedFor: 3, marked: Object.freeze([1]) })
+  const event = Object.freeze({ turn: 3, reasonKind: 'aborted' })
+
+  const armed = armLedger(ledger, 4)
+  assert.deepEqual(ledger, { armedFor: 3, marked: [1] })
+  assert.equal(armed.armedFor, 4)
+  assert.deepEqual(armed.marked, [1])
+
+  const { ledger: marked, mark } = observeTurn(ledger, event)
+  assert.equal(mark, true)
+  assert.notEqual(marked, ledger)
+  assert.deepEqual(ledger, { armedFor: 3, marked: [1] })
+  assert.deepEqual(event, { turn: 3, reasonKind: 'aborted' })
+  assert.deepEqual(marked.marked, [1, 3])
+
+  // A turn outside the armed window leaves the ledger untouched by identity.
+  assert.equal(
+    observeTurn(ledger, Object.freeze({ turn: 9, reasonKind: 'aborted' })).ledger,
+    ledger,
+  )
+  assert.equal(EMPTY_LEDGER.armedFor, null)
+  assert.deepEqual(EMPTY_LEDGER.marked, [])
 })
