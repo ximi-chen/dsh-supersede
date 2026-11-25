@@ -661,8 +661,6 @@ window.__ModuleLoader__.load({
           () => ctx.locale.register(NS, { zh, en }),
           'dsh-supersede: dictionaries',
         )
-        const t = ctx.locale.bind(NS)
-
         // One stylesheet for both entries, owned by this effect. `data-plugin`
         // is also the loader's teardown handle, so an unload removes the tag
         // even when this cleanup never runs.
