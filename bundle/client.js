@@ -1,21 +1,18 @@
 /**
  * Client half of @local/dsh-supersede.
  *
- * Ticket 03: the switch is live. While it is on and the session is running, the
- * first observed `next-turn` queue row cancels the running turn; the Host keeps
- * the inbox, so that row opens the next turn by itself.
+ * While the switch is on and the session is running, the first observed
+ * `next-turn` queue row cancels the running turn; the Host keeps the inbox, so
+ * that row opens the next turn by itself.
  *
- * Ticket 04: an accepted cancel arms a per-session, in-memory ledger for the
- * turn that was open at that moment; that turn's `turnTail` then shows
- * 「已被新消息接替」 once it closes `aborted`.
+ * An accepted cancel arms a per-session, in-memory ledger for the turn that was
+ * open at that moment; that turn's `turnTail` then shows 「已被新消息接替」 once
+ * it closes `aborted`.
  *
- * Ticket 05: the switch hides where it cannot act (no retained session binding,
- * or the peer may not cancel), disables itself with a readable reason while
- * busy Enter is `steer`, and a failed cancel shows a transient
- * 「接替失败，消息仍在排队」 instead of pretending the message superseded.
- *
- * Ticket 06: final display metadata, an original icon and one token-only
- * stylesheet injected from `apply`; presentation only, no behaviour change.
+ * The switch hides where it cannot act (no retained session binding, or the
+ * peer may not cancel), disables itself with a readable reason while busy Enter
+ * is `steer`, and a failed cancel shows a transient 「接替失败，消息仍在排队」
+ * instead of pretending the message superseded.
  *
  * This is a classic script on purpose: the browser registers a lazy factory with
  * the shell's module loader and a bundle without a build step can only require
@@ -78,20 +75,20 @@ window.__ModuleLoader__.load({
      * `seen` holds every queue id already judged; `primed` says the first
      * observation of this page/plugin load already ran (its rows are a
      * baseline, never a supersede request); `inFlight` says one cancel request
-     * is outstanding for this session; `ledger` says which turn, if any, this
-     * session's accepted cancel marked.
-     * @typedef {{ enabled: boolean, seen: Set<string>, primed: boolean, inFlight: boolean, ledger: { armedFor: number | null, marked: readonly number[] } | null }} SessionRecord
+     * is outstanding for this session; `ledger` says which turns, if any, this
+     * session's accepted cancels marked (the core's `Ledger` shape).
+     * @typedef {{ enabled: boolean, seen: Set<string>, primed: boolean, inFlight: boolean, ledger: { armed: readonly number[], marked: readonly number[] } | null }} SessionRecord
      */
     const sessions = new Map()
     /** Components watching the map; one notification per change, no payload. */
     const watchers = new Set()
     /**
-     * The core's frozen `EMPTY_LEDGER`. The chunk only resolves inside `apply`,
-     * and the ledger must not be imported here, so this is adopted there; every
-     * record is created by a mounted slot component, which exists after that.
-     * @type {{ armedFor: number | null, marked: readonly number[] } | null}
+     * The decision core, resolved once by `apply`. Slot components mount only
+     * after that point, which is what lets `ledgerOf` fall back to its frozen
+     * empty ledger.
+     * @type {object | null}
      */
-    let emptyLedger = null
+    let core = null
 
     /** @param {unknown} sessionId @returns {string} */
     function storageKey(sessionId) {
@@ -137,11 +134,21 @@ window.__ModuleLoader__.load({
           seen: new Set(),
           primed: false,
           inFlight: false,
-          ledger: emptyLedger,
+          ledger: null,
         }
         sessions.set(key, state)
       }
       return state
+    }
+
+    /**
+     * The record's ledger, or the core's frozen empty ledger until an accepted
+     * cancel arms it.
+     * @param {SessionRecord} state
+     * @returns {{ armed: readonly number[], marked: readonly number[] }}
+     */
+    function ledgerOf(state) {
+      return state.ledger ?? core.EMPTY_LEDGER
     }
 
     /** @param {unknown} sessionId @returns {boolean} */
@@ -354,14 +361,12 @@ window.__ModuleLoader__.load({
      * plus the locale seat (`t`) and this entry's injected face: the decision
      * core, the busy-Enter snapshot face, the per-session `cancelTurn`, and
      * `hasBinding` (whether this session still has a face to cancel through).
-     * The injected `translate` is the same namespace's bound translator, kept as
-     * a fallback because a `t` prop cannot be injected over the locale seat.
      * @param {object} props
      * @returns {object | null}
      */
     function SupersedeToggle(props) {
       const { sessionId, core, busyEnter, hasBinding, useInput, useSession, useAccess, useChat } = props
-      const t = props.t ?? props.translate
+      const t = props.t
       const enabled = useSessionEnabled(sessionId)
 
       // Busy-Enter is a settings snapshot, not a hook context, so the plain
@@ -380,10 +385,15 @@ window.__ModuleLoader__.load({
       // The turn that is open right now. A cancel is accepted for *this*
       // number, which is what lets the marker tell our cancel apart from the
       // Stop button later: both close a turn `aborted`, only identity
-      // distinguishes them. Without a chat target the snapshot has no turns.
+      // distinguishes them. With no turn yet, arm "any next aborted turn" (0);
+      // with the last turn already closed, do not arm at all (null), so a
+      // manual Stop that closed the turn before the cancel response is never
+      // marked.
       const openTurn = useChat((snapshot) => {
         const order = snapshot.timeline.turnOrder
-        return order.length === 0 ? null : order[order.length - 1]
+        if (order.length === 0) return 0
+        const last = order[order.length - 1]
+        return snapshot.timeline.turns.get(last)?.status === 'open' ? last : null
       })
 
       // The injected `cancelTurn` closes over one session, so it can be a fresh
@@ -483,7 +493,7 @@ window.__ModuleLoader__.load({
             // turn closes; a failed cancel leaves the ledger untouched, so it
             // can never mark a turn.
             if (armedFor === null || armedFor === undefined) return
-            state.ledger = core.armLedger(state.ledger ?? core.EMPTY_LEDGER, armedFor)
+            state.ledger = core.armLedger(ledgerOf(state), armedFor)
             notifySessionState()
           })
           .catch((error) => {
@@ -543,8 +553,9 @@ window.__ModuleLoader__.load({
           ),
           h('span', null, t('toggle.label')),
         ),
-        // The chip claims an effect that cannot happen while gated.
-        enabled && !gated
+        // The chip states the mode, not the ability to trigger it: it stays
+        // visible under `steer` while the switch itself explains its gate.
+        enabled
           ? h(
             'span',
             {
@@ -574,23 +585,24 @@ window.__ModuleLoader__.load({
      * 「已被新消息接替」 on the turn a supersede actually interrupted.
      *
      * Every closed turn renders this entry at its tail. Observing a turn is a
-     * ledger transition, not a render decision: the button's cancel armed the
-     * ledger for one turn number, and only that turn may be marked — and only
-     * when it closed `aborted`. The mark lives in this module's memory, so a
-     * reload drops it and the interrupted turn reads as a plain abort again.
+     * ledger transition, not a render decision: an accepted cancel armed the
+     * ledger for the turn that was open then, and only that turn may be marked
+     * — and only when it closed `aborted`. The mark lives in this module's
+     * memory, so a reload drops it and the interrupted turn reads as a plain
+     * abort again.
      * @param {object} props owner `{ turn, seq }` plus standard session props
      * @returns {object | null}
      */
     function SupersededMarker(props) {
       const { sessionId, core, turn } = props
-      const t = props.t ?? props.translate
+      const t = props.t
       const [, rerender] = React.useReducer((count) => count + 1, 0)
       const known = sessionId === undefined || sessionId === null ? null : stateOf(sessionId)
       // The cancel response can resolve before *or* after this entry mounts.
-      // Reading the armed number during the render makes the observe effect
+      // Reading the ledger identity during the render makes the observe effect
       // below react to the arm itself, not only to the turn identity, so a
       // turn that closed early is still marked when the arm lands late.
-      const armedFor = known === null ? null : known.ledger?.armedFor ?? null
+      const ledger = known === null ? null : ledgerOf(known)
 
       // The button writes the ledger; this keeps the mark rendered when the
       // arming lands before or after this entry mounts.
@@ -598,20 +610,21 @@ window.__ModuleLoader__.load({
 
       React.useEffect(() => {
         if (known === null) return
+        const current = ledgerOf(known)
         // `turn.end` is the whole observed `turn/end`; `aborted` is the live
         // cancel vocabulary. `interrupted` is crash recovery only and is never
         // produced by our cancel, so it must not mark.
-        const next = core.observeTurn(known.ledger ?? core.EMPTY_LEDGER, {
+        const next = core.observeTurn(current, {
           turn: turn.turn,
           reasonKind: turn.end?.data?.reason?.kind,
         })
-        if (next.ledger === (known.ledger ?? core.EMPTY_LEDGER)) return
+        if (next.ledger === current) return
         known.ledger = next.ledger
         notifySessionState()
-      }, [sessionId, turn.turn, armedFor])
+      }, [sessionId, turn.turn, ledger])
 
       if (known === null) return null
-      if (!core.isMarked(known.ledger ?? core.EMPTY_LEDGER, turn.turn)) return null
+      if (!core.isMarked(ledgerOf(known), turn.turn)) return null
 
       return h(
         'span',
@@ -637,16 +650,12 @@ window.__ModuleLoader__.load({
        * @returns {Promise<void>}
        */
       async apply(ctx) {
-        let core
         try {
           core = await require.async('./client.core.js')
         } catch (error) {
           console.warn('dsh-supersede: decision core failed to load', error)
           return
         }
-        // Records are only created by mounted slot components, so adopting the
-        // core's frozen empty ledger here makes every record ledger-carrying.
-        emptyLedger = core.EMPTY_LEDGER
 
         ctx.effect(
           () => ctx.locale.register(NS, { zh, en }),
@@ -695,11 +704,7 @@ window.__ModuleLoader__.load({
           id: ENTRY_ID,
           order: 10,
           locale: NS,
-          // The locale seat already supplies `t`; injecting a prop named `t`
-          // would instead throw on prop overlap. Carry the same bound
-          // translator under a free name so the component never lacks one.
           inject: (sessionId) => ({
-            translate: t,
             core,
             busyEnter,
             cancelTurn: () => cancelTurn(sessionId),
@@ -717,7 +722,7 @@ window.__ModuleLoader__.load({
           id: MARKER_ENTRY_ID,
           order: 100,
           locale: NS,
-          inject: (sessionId) => ({ core, translate: t }),
+          inject: () => ({ core }),
         }, SupersededMarker))
       },
     }
