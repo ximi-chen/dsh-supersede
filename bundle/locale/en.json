@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Session supersede",
+    "description": "Adds a per-session supersede switch to the left of the composer toolbar: while a turn is running, sending a message cancels that turn and starts a new one with the message. Two limits: the send button still says \"queue\", and it only works while busy Enter is set to queue."
+  }
+}
