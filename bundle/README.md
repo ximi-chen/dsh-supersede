@@ -56,3 +56,11 @@ the label disappear, and sending returns to stock behaviour.
 存在内存中：刷新页面后标记消失，被打断的轮次显示为普通停止。
 
 **卸载。** 打开**插件**，找到本 bundle 并移除；控件与标记消失，发送行为恢复原生。
+
+## Development / 开发
+
+Tests: `node --test "bundle/**/*.test.js"` (Node's built-in runner, zero
+dependencies). There is no build step: `bundle/` ships as plain classic scripts.
+
+测试：`node --test "bundle/**/*.test.js"`（Node 内置测试运行器，零依赖）。
+没有构建步骤：`bundle/` 直接以纯 classic script 分发。
