@@ -7,8 +7,12 @@
  *
  * Ticket 04: an accepted cancel arms a per-session, in-memory ledger for the
  * turn that was open at that moment; that turn's `turnTail` then shows
- * 「已被新消息接替」 once it closes `aborted`. The busy-Enter / failure gates
- * belong to later tickets.
+ * 「已被新消息接替」 once it closes `aborted`.
+ *
+ * Ticket 05: the switch hides where it cannot act (no retained session binding,
+ * or the peer may not cancel), disables itself with a readable reason while
+ * busy Enter is `steer`, and a failed cancel shows a transient
+ * 「接替失败，消息仍在排队」 instead of pretending the message superseded.
  *
  * This is a classic script on purpose: the browser registers a lazy factory with
  * the shell's module loader and a bundle without a build step can only require
@@ -31,6 +35,8 @@ window.__ModuleLoader__.load({
     const TURN_TAIL_SLOT = 'conversation.chat.turnTail'
     /** Marker entry id; Session-scoped, one per closed turn in the chat. */
     const MARKER_ENTRY_ID = 'dsh-supersede.marker'
+    /** How long the transient cancel-failure line stays on screen. */
+    const FAILURE_VISIBLE_MS = 5000
 
     /** Simplified Chinese dictionary (the key-set source of truth). */
     const zh = {
@@ -38,6 +44,8 @@ window.__ModuleLoader__.load({
       'toggle.active': '接替中',
       'toggle.title': '运行中发送消息会立即中止当前轮，并用这条消息开启新一轮。',
       'toggle.ariaLabel': '接替：运行中发送消息会立即中止当前轮，并用这条消息开启新一轮。',
+      'toggle.disabled.steer': '忙碌回车为「插话」时不适用接替',
+      'toggle.failure': '接替失败，消息仍在排队',
       'marker.text': '已被新消息接替',
     }
 
@@ -47,6 +55,8 @@ window.__ModuleLoader__.load({
       'toggle.active': 'Superseding',
       'toggle.title': 'While a turn is running, sending a message cancels the current turn and starts a new one with it.',
       'toggle.ariaLabel': 'Supersede: while a turn is running, sending a message cancels the current turn and starts a new one.',
+      'toggle.disabled.steer': 'Not available while busy Enter is set to steer',
+      'toggle.failure': 'Supersede failed; the message is still queued.',
       'marker.text': 'Superseded by a new message',
     }
 
@@ -246,6 +256,12 @@ window.__ModuleLoader__.load({
         borderColor: 'var(--dsw-alias-state-business-primary)',
         color: 'var(--dsw-alias-label-primary)',
       },
+      // Visibly inert but still focusable and readable: a natively `disabled`
+      // button would swallow pointer events, taking the reason with it.
+      toggleButtonGated: {
+        color: 'var(--dsw-alias-label-dimmed)',
+        cursor: 'not-allowed',
+      },
       track: {
         display: 'inline-flex',
         alignItems: 'center',
@@ -281,6 +297,18 @@ window.__ModuleLoader__.load({
         lineHeight: '18px',
         whiteSpace: 'nowrap',
       },
+      // Plain text, no chip chrome: same 20px line rhythm as the switch, so the
+      // toolbar does not grow taller while the message is on screen.
+      failure: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        boxSizing: 'border-box',
+        height: 20,
+        color: 'var(--dsw-alias-state-error-primary)',
+        fontSize: 11,
+        lineHeight: '18px',
+        whiteSpace: 'nowrap',
+      },
       // A subdued line, not a card: no border, background, icon or click
       // target, so it reads as part of the turn tail and nothing shifts.
       marker: {
@@ -297,14 +325,15 @@ window.__ModuleLoader__.load({
      * Session-scoped supersede switch and its queue trigger.
      * Receives the standard session props (`useInput`, `useSession`, `useAccess`)
      * plus the locale seat (`t`) and this entry's injected face: the decision
-     * core, the busy-Enter snapshot face, and the per-session `cancelTurn`. The
-     * injected `translate` is the same namespace's bound translator, kept as a
-     * fallback because a `t` prop cannot be injected over the locale seat.
+     * core, the busy-Enter snapshot face, the per-session `cancelTurn`, and
+     * `hasBinding` (whether this session still has a face to cancel through).
+     * The injected `translate` is the same namespace's bound translator, kept as
+     * a fallback because a `t` prop cannot be injected over the locale seat.
      * @param {object} props
      * @returns {object | null}
      */
     function SupersedeToggle(props) {
-      const { sessionId, core, busyEnter, useInput, useSession, useAccess, useChat } = props
+      const { sessionId, core, busyEnter, hasBinding, useInput, useSession, useAccess, useChat } = props
       const t = props.t ?? props.translate
       const enabled = useSessionEnabled(sessionId)
 
@@ -314,6 +343,10 @@ window.__ModuleLoader__.load({
         busyEnter.subscribe,
         busyEnter.getSnapshot,
       )
+      // `steer` means the message is merged into the running turn instead of
+      // entering the queue, so there is no observable trigger: offer the switch
+      // as inert with a reason instead of silently doing nothing.
+      const gated = busyEnterBehavior === 'steer'
       const queue = useInput((state) => state.queue)
       const running = useSession((state) => state.running) ?? false
       const denied = useAccess('session/cancel') === false
@@ -330,6 +363,38 @@ window.__ModuleLoader__.load({
       // closure on every render; a ref keeps it out of the observation deps.
       const cancelTurn = React.useRef(props.cancelTurn)
       cancelTurn.current = props.cancelTurn
+
+      // A cancel that settles `{ ok: false }` (or throws) must be visible, but
+      // only for a moment: the message is still queued and the user may act.
+      const [failure, setFailure] = React.useState(false)
+      const failureTimer = React.useRef(null)
+      // The observation effect calls this without taking it as a dependency;
+      // assigning the ref each render keeps the latest `setFailure` in play.
+      const showFailure = React.useRef(() => {})
+      showFailure.current = () => {
+        setFailure(true)
+        if (failureTimer.current !== null) clearTimeout(failureTimer.current)
+        failureTimer.current = setTimeout(() => {
+          failureTimer.current = null
+          setFailure(false)
+        }, FAILURE_VISIBLE_MS)
+      }
+
+      // A reused cell must not carry another session's failure line, and an
+      // unmount must not leave a timer that calls `setFailure` on nothing.
+      React.useEffect(() => {
+        setFailure(false)
+        if (failureTimer.current !== null) {
+          clearTimeout(failureTimer.current)
+          failureTimer.current = null
+        }
+        return () => {
+          if (failureTimer.current !== null) {
+            clearTimeout(failureTimer.current)
+            failureTimer.current = null
+          }
+        }
+      }, [sessionId])
 
       // One verdict per observed snapshot. Everything written here is module
       // memory, never React state, so a verdict cannot schedule a render, and
@@ -373,6 +438,7 @@ window.__ModuleLoader__.load({
         } catch (error) {
           console.warn('dsh-supersede: cancel failed', error)
           state.inFlight = false
+          showFailure.current()
           return
         }
         // Fire and settle: never await here, never retry. The Host keeps the
@@ -381,6 +447,9 @@ window.__ModuleLoader__.load({
           .then((result) => {
             if (result !== undefined && result !== null && result.ok === false) {
               console.warn('dsh-supersede: cancel failed', result.error && result.error.code)
+              // The queued message did not supersede anything: say so, and
+              // leave the ledger untouched so no turn can be marked.
+              showFailure.current()
               return
             }
             // Accepted: a void request or a non-failing result. Arm until that
@@ -392,16 +461,40 @@ window.__ModuleLoader__.load({
           })
           .catch((error) => {
             console.warn('dsh-supersede: cancel failed', error)
+            showFailure.current()
           })
           .finally(() => {
             state.inFlight = false
           })
       }, [queue, running, denied, enabled, busyEnterBehavior, openTurn, sessionId])
 
+      // Hooks are all above this line; the following are plain early exits.
+      // No session, no retained binding, or no cancel permission means the
+      // switch could not act, so it is not offered at all (the shipped UI
+      // treats a denied cancel as "offer no control").
       if (sessionId === undefined || sessionId === null) return null
+      if (!hasBinding()) return null
+      if (denied) return null
 
+      const reason = t('toggle.disabled.steer')
+      const buttonStyle = gated
+        ? { ...styles.toggleButton, ...styles.toggleButtonGated }
+        : enabled
+          ? { ...styles.toggleButton, ...styles.toggleButtonOn }
+          : styles.toggleButton
       const toggle = () => {
+        // Gating is presentation only: the stored value is untouched, so
+        // switching busy Enter back to `queue` restores the old state at once.
+        if (gated) return
         toggleEnabled(sessionId)
+      }
+      const onKeyDown = (event) => {
+        // A native button activates on Enter/Space by dispatching a click; for
+        // `aria-disabled` it stays focusable, so block that activation too.
+        if (!gated) return
+        if (event.key === 'Enter' || event.key === ' ' || event.key === 'Spacebar') {
+          event.preventDefault()
+        }
       }
 
       return h(
@@ -413,11 +506,13 @@ window.__ModuleLoader__.load({
             type: 'button',
             role: 'switch',
             'aria-checked': enabled,
-            'aria-label': t('toggle.ariaLabel'),
-            title: t('toggle.title'),
+            'aria-disabled': gated ? true : undefined,
+            'aria-label': gated ? reason : t('toggle.ariaLabel'),
+            title: gated ? reason : t('toggle.title'),
             tabIndex: 0,
-            style: enabled ? { ...styles.toggleButton, ...styles.toggleButtonOn } : styles.toggleButton,
+            style: buttonStyle,
             onClick: toggle,
+            onKeyDown,
           },
           h(
             'span',
@@ -426,11 +521,24 @@ window.__ModuleLoader__.load({
           ),
           h('span', null, t('toggle.label')),
         ),
-        enabled
+        // The chip claims an effect that cannot happen while gated.
+        enabled && !gated
           ? h(
             'span',
             { style: styles.chip, 'data-dsh-supersede': 'active', title: t('toggle.title') },
             t('toggle.active'),
+          )
+          : null,
+        failure
+          ? h(
+            'span',
+            {
+              role: 'status',
+              'aria-live': 'polite',
+              style: styles.failure,
+              'data-dsh-supersede': 'failure',
+            },
+            t('toggle.failure'),
           )
           : null,
       )
@@ -555,6 +663,9 @@ window.__ModuleLoader__.load({
             core,
             busyEnter,
             cancelTurn: () => cancelTurn(sessionId),
+            // The switch is only offered while the session still has a face to
+            // cancel through; a missing binding is hidden, not shown broken.
+            hasBinding: () => ctx.sessions.binding(sessionId) !== undefined,
           }),
         }, SupersedeToggle))
 
