@@ -1,0 +1,6 @@
+.tmp/
+.worktrees/
+node_modules/
+*.log
+.dsh-write-probe
+.scratch/.dsh-write-probe
