@@ -14,6 +14,9 @@
  * busy Enter is `steer`, and a failed cancel shows a transient
  * 「接替失败，消息仍在排队」 instead of pretending the message superseded.
  *
+ * Ticket 06: final display metadata, an original icon and one token-only
+ * stylesheet injected from `apply`; presentation only, no behaviour change.
+ *
  * This is a classic script on purpose: the browser registers a lazy factory with
  * the shell's module loader and a bundle without a build step can only require
  * baseline modules, so the dictionaries live here. `locale/*.json` supplies the
@@ -225,101 +228,125 @@ window.__ModuleLoader__.load({
       return current
     }
 
-    /** Tool-row geometry; colors come only from `--dsw-alias-*` theme tokens. */
-    const styles = {
-      root: {
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-        minWidth: 0,
-      },
-      toggleButton: {
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-        boxSizing: 'border-box',
-        height: 24,
-        margin: 0,
-        padding: '0 8px',
-        border: '1px solid var(--dsw-alias-border-l2)',
-        borderRadius: 999,
-        background: 'var(--dsw-alias-bg-layer-1)',
-        color: 'var(--dsw-alias-label-secondary)',
-        font: 'inherit',
-        fontSize: 12,
-        lineHeight: '20px',
-        whiteSpace: 'nowrap',
-        cursor: 'pointer',
-        userSelect: 'none',
-      },
-      toggleButtonOn: {
-        borderColor: 'var(--dsw-alias-state-business-primary)',
-        color: 'var(--dsw-alias-label-primary)',
-      },
-      // Visibly inert but still focusable and readable: a natively `disabled`
-      // button would swallow pointer events, taking the reason with it.
-      toggleButtonGated: {
-        color: 'var(--dsw-alias-label-dimmed)',
-        cursor: 'not-allowed',
-      },
-      track: {
-        display: 'inline-flex',
-        alignItems: 'center',
-        justifyContent: 'flex-start',
-        flex: '0 0 auto',
-        boxSizing: 'border-box',
-        width: 22,
-        height: 14,
-        padding: 2,
-        borderRadius: 999,
-        background: 'var(--dsw-alias-border-l3)',
-      },
-      trackOn: {
-        justifyContent: 'flex-end',
-        background: 'var(--dsw-alias-state-business-primary)',
-      },
-      thumb: {
-        width: 10,
-        height: 10,
-        borderRadius: 999,
-        background: 'var(--dsw-alias-switch-thumb)',
-      },
-      chip: {
-        display: 'inline-flex',
-        alignItems: 'center',
-        boxSizing: 'border-box',
-        height: 20,
-        padding: '0 6px',
-        borderRadius: 999,
-        background: 'var(--dsw-alias-bg-layer-2)',
-        color: 'var(--dsw-alias-state-business-primary)',
-        fontSize: 11,
-        lineHeight: '18px',
-        whiteSpace: 'nowrap',
-      },
-      // Plain text, no chip chrome: same 20px line rhythm as the switch, so the
-      // toolbar does not grow taller while the message is on screen.
-      failure: {
-        display: 'inline-flex',
-        alignItems: 'center',
-        boxSizing: 'border-box',
-        height: 20,
-        color: 'var(--dsw-alias-state-error-primary)',
-        fontSize: 11,
-        lineHeight: '18px',
-        whiteSpace: 'nowrap',
-      },
-      // A subdued line, not a card: no border, background, icon or click
-      // target, so it reads as part of the turn tail and nothing shifts.
-      marker: {
-        display: 'inline-flex',
-        alignItems: 'center',
-        marginTop: 4,
-        color: 'var(--dsw-alias-label-tertiary)',
-        fontSize: 12,
-        lineHeight: '18px',
-      },
-    }
+    /**
+     * Presentation only: every colour is a `--dsw-alias-*` theme token and the
+     * rules keep the composer's tool-row rhythm — a 24px control, a 20px chip
+     * and 11–12px type. The stylesheet is injected once from `apply` and owned
+     * by that effect, so unloading the plugin removes it with the rest.
+     */
+    const CSS = `
+.dsh-supersede-root {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: none;
+  white-space: nowrap;
+}
+
+/* Text plus a small track, like the shipped toolbar controls. The switch is
+ * never natively disabled: aria-disabled keeps it focusable and readable so
+ * the reason stays reachable on hover and on focus. */
+.dsh-supersede-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  box-sizing: border-box;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 20px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.dsh-supersede-toggle[aria-checked='true'] {
+  color: var(--dsw-alias-label-primary);
+}
+
+.dsh-supersede-toggle:hover:not([aria-disabled='true']) {
+  color: var(--dsw-alias-label-primary);
+}
+
+.dsh-supersede-toggle:focus-visible {
+  outline: 1px solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+  outline-offset: 2px;
+}
+
+.dsh-supersede-toggle[aria-disabled='true'] {
+  color: var(--dsw-alias-label-dimmed);
+  cursor: not-allowed;
+}
+
+.dsh-supersede-track {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  flex: none;
+  box-sizing: border-box;
+  width: 22px;
+  height: 14px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--dsw-alias-border-l2);
+}
+
+.dsh-supersede-toggle[aria-checked='true'] .dsh-supersede-track {
+  justify-content: flex-end;
+  background: var(--dsw-alias-state-business-primary);
+}
+
+.dsh-supersede-thumb {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--dsw-alias-bg-layer-1);
+}
+
+.dsh-supersede-chip {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  box-sizing: border-box;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--dsw-alias-bg-module-platform);
+  color: var(--dsw-alias-state-business-primary);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+/* No card chrome: it reads as a transient note. Nothing is reserved for it
+ * and it may wrap inside the cell instead of widening the tool row. */
+.dsh-supersede-failure {
+  min-width: 0;
+  color: var(--dsw-alias-state-error-primary);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* A subdued line, not a card: no border, background, icon or click target,
+ * so it reads as part of the turn tail and nothing shifts. */
+.dsh-supersede-marker {
+  display: flex;
+  align-items: center;
+  margin-top: 4px;
+  color: var(--dsw-alias-label-tertiary);
+  font-size: 12px;
+  line-height: 18px;
+}
+`
 
     /**
      * Session-scoped supersede switch and its queue trigger.
@@ -477,11 +504,6 @@ window.__ModuleLoader__.load({
       if (denied) return null
 
       const reason = t('toggle.disabled.steer')
-      const buttonStyle = gated
-        ? { ...styles.toggleButton, ...styles.toggleButtonGated }
-        : enabled
-          ? { ...styles.toggleButton, ...styles.toggleButtonOn }
-          : styles.toggleButton
       const toggle = () => {
         // Gating is presentation only: the stored value is untouched, so
         // switching busy Enter back to `queue` restores the old state at once.
@@ -499,25 +521,25 @@ window.__ModuleLoader__.load({
 
       return h(
         'span',
-        { style: styles.root, 'data-dsh-supersede': 'toggle' },
+        { className: 'dsh-supersede-root', 'data-dsh-supersede': 'toggle' },
         h(
           'button',
           {
             type: 'button',
             role: 'switch',
+            className: 'dsh-supersede-toggle',
             'aria-checked': enabled,
             'aria-disabled': gated ? true : undefined,
             'aria-label': gated ? reason : t('toggle.ariaLabel'),
             title: gated ? reason : t('toggle.title'),
             tabIndex: 0,
-            style: buttonStyle,
             onClick: toggle,
             onKeyDown,
           },
           h(
             'span',
-            { style: enabled ? { ...styles.track, ...styles.trackOn } : styles.track, 'aria-hidden': true },
-            h('span', { style: styles.thumb }),
+            { className: 'dsh-supersede-track', 'aria-hidden': true },
+            h('span', { className: 'dsh-supersede-thumb' }),
           ),
           h('span', null, t('toggle.label')),
         ),
@@ -525,7 +547,11 @@ window.__ModuleLoader__.load({
         enabled && !gated
           ? h(
             'span',
-            { style: styles.chip, 'data-dsh-supersede': 'active', title: t('toggle.title') },
+            {
+              className: 'dsh-supersede-chip',
+              'data-dsh-supersede': 'active',
+              title: t('toggle.title'),
+            },
             t('toggle.active'),
           )
           : null,
@@ -535,7 +561,7 @@ window.__ModuleLoader__.load({
             {
               role: 'status',
               'aria-live': 'polite',
-              style: styles.failure,
+              className: 'dsh-supersede-failure',
               'data-dsh-supersede': 'failure',
             },
             t('toggle.failure'),
@@ -588,10 +614,10 @@ window.__ModuleLoader__.load({
       if (!core.isMarked(known.ledger ?? core.EMPTY_LEDGER, turn.turn)) return null
 
       return h(
-        'div',
+        'span',
         {
           role: 'note',
-          style: styles.marker,
+          className: 'dsh-supersede-marker',
           'data-dsh-supersede': 'marker',
         },
         t('marker.text'),
@@ -627,6 +653,20 @@ window.__ModuleLoader__.load({
           'dsh-supersede: dictionaries',
         )
         const t = ctx.locale.bind(NS)
+
+        // One stylesheet for both entries, owned by this effect. `data-plugin`
+        // is also the loader's teardown handle, so an unload removes the tag
+        // even when this cleanup never runs.
+        ctx.effect(() => {
+          const tag = document.createElement('style')
+          tag.dataset.plugin = '@local/dsh-supersede'
+          tag.dataset.pluginCss = '@local/dsh-supersede/styles.css'
+          tag.textContent = CSS
+          document.head.appendChild(tag)
+          return () => {
+            tag.remove()
+          }
+        }, 'dsh-supersede: stylesheet')
 
         // Busy-Enter is read once; two stable bound methods are all the slot
         // component needs. `form.getSnapshot`/`form.subscribe` use `this`, so

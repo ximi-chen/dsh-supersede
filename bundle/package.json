@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Session-level supersede switch for the DSH composer (ticket 01 skeleton).",
+  "description": "A per-session Supersede switch at the left of the composer's tool row: sending a message while a turn runs cancels that turn and opens the next one with the message. The send button still says Queue, and it only works when Busy Enter is set to queue.",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
@@ -13,6 +13,7 @@
   "files": [
     "index.js",
     "client.js",
+    "client.core.js",
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg"
