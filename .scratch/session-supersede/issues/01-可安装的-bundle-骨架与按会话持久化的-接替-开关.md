@@ -9,7 +9,7 @@
 
 **Blocked by:** 无（可立即开始）
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] bundle 安装进当前 profile 后，刷新页面，任意会话的输入框工具行左侧出现「接替」开关；空白首页不出现。
 - [ ] 打开开关后「接替中」chip 立即出现，关闭即消失；控件 `role="switch"`、`aria-checked` 随状态变化，键盘可达。
@@ -17,5 +17,10 @@
 - [ ] 开关只用主题令牌，亮/暗主题下都像工具行的一部分；窄宽度工具行不破版。
 - [ ] 新增可见文案全部走语言服务，zh 与 en 齐备。
 - [ ] 客户端注册的资源在卸载/页面重载时被正确释放。
+
+## Comments
+
+### local — 2026-11-25T10:30:15.972Z
+Implemented and merged as b7d51d7 (feature commit 0ea3458). Deliverable: build-free `@local/dsh-supersede` bundle with a per-session 「接替」 switch in the composer's left tool row, zh/en copy, and `localStorage` state keyed `dsh-supersede:enabled:<sessionId>`; installed into the profile with `application: applied`. Verified by `node --check`, manifest/asset assertions and reinstall; browser visual acceptance stays manual.
 
 ## 进度

@@ -10,11 +10,16 @@
 
 **Blocked by:** #04, #05
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 插件详情页：原创图标、zh/en 标题与描述，描述含两条限制；无元数据诊断告警。
 - [ ] README 覆盖启用方式、两条限制与卸载后恢复原状的说明。
 - [ ] 全新会话现场清单通过：开关出现、空白首页不出现；默认关、刷新保持、会话隔离；运行中发消息 → 当前轮停下、消息开下一轮、标记落在被打断轮；双击 Esc 不产生标记；关闭时先排队的消息在开启后不被中止；steer 下禁用并说明；亮/暗主题、zh/en、键盘焦点、窄宽度工具行。
 - [ ] 卸载插件并刷新后：控件与标记消失，发送行为完全恢复原生，无残留状态或脚本错误。
+
+## Comments
+
+### local — 2026-11-25T10:30:19.303Z
+Merged as caa6d99 (feature commit 8b02a9a). Deliverable: zh/en `meta.title`/`meta.description` naming the switch at the composer's left tool row and both limits (send button still says Queue; Busy Enter must be queue), original SVG icon, bilingual README with uninstall, one theme-token stylesheet with focus-visible/disabled states, `files` now includes `client.core.js`. Install → remove → reinstall all returned `application: applied`; visual/fresh-session acceptance remains manual.
 
 ## 进度

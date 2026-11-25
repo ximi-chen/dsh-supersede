@@ -10,7 +10,7 @@
 
 **Blocked by:** #01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 模块可从 bundle 目录直接被 node 加载，不依赖任何第三方包或 DSH 包。
 - [ ] 用例 1–9 全部有测试且绿：一条新行恰好取消一次；同快照求值两次无第二次取消；空闲新行不取消但记下且此后不触发；关闭时新行记下、之后打开不触发；steer 不取消并给出门禁原因；无权限不取消；在飞不第二次取消、落定后可再取消；一批两条新行只取消一次且两条都记录；上一轮落定后 running 中再来新行 → 新的取消。
@@ -18,6 +18,11 @@
 - [ ] 在 bundle 目录跑测试命令一次通过，不引入额外测试框架或打包器。
 
 语义：同一批新行只取一次消；同一份快照求值两次不得第二次取消；关闭 / 不 running / steer / 无取消权限 / 取消在飞都不取消且记下 id；落定后新行可再取消。
+
+## Comments
+
+### local — 2026-11-25T10:30:16.079Z
+Merged as 7732da6 (feature commit 091efe3). Deliverable: zero-dependency `decideSupersede` with all eight gate reasons and an ESM `node:test` harness that loads the client chunk with a loader stub; spec-locked cases 1–9 are covered. Full suite now 27/27 after the later tickets.
 
 
 

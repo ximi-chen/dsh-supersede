@@ -10,12 +10,17 @@
 
 **Blocked by:** #03
 
-**Status:** ready-for-agent
+**Status:** resolved
 
 - [ ] 把忙碌回车设为「插话」：开关禁用，悬停/聚焦提示说明原因；改回排队后立即可用。
 - [ ] 忙碌回车偏好读不到时按排队处理（不禁用）；拿不到会话绑定时不渲染控件；无取消权限时不发起取消。
 - [ ] 任一前置 API 缺失时，运行中发消息仍是原生排队，发送本身不受影响。
 - [ ] 人工制造或模拟一次取消失败：槽位内出现短暂失败提示，消息仍在队列，无重试，且该轮不出现「已被新消息接替」。
 - [ ] 提示文案 zh/en 齐备、可被读屏读到（不只靠颜色）；提示细节不影响工具行布局。
+
+## Comments
+
+### local — 2026-11-25T10:30:19.234Z
+Merged as 8aeb9c9 (feature commit 078188d). Deliverable: Busy-Enter `steer` renders the switch inert with a spoken reason while preserving the stored state; missing session binding or denied `session/cancel` hides the control (fail closed); a cancel that settles `{ok:false}` shows the transient 「接替失败，消息仍在排队」 status line, never retries and never arms the ledger. zh/en copy added, 27/27 suite green.
 
 ## 进度
