@@ -12,6 +12,8 @@
 
 ## 1. 发布一个版本（本地）
 
+首次发布已经停在 `0.1.0`（tag `v0.1.0`）。以后每次发版从下面第 1 步开始：
+
 ```sh
 # 1) 改版本号
 npm version patch --no-git-tag-version   # 或 minor / 手改 package.json
@@ -31,10 +33,10 @@ git commit -m "chore: update plugin index for v0.1.0"
 
 ## 2. 推到 GitHub
 
-首次：
+本仓库的 `origin` 已配置为 `https://github.com/ximi-chen/dsh-supersede.git`。首次推：
 
 ```sh
-git remote add origin https://github.com/ximi-chen/dsh-supersede.git
+git remote -v                             # 应显示 origin
 git push -u origin main --follow-tags
 ```
 
