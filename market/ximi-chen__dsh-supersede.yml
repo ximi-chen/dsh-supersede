@@ -1,0 +1,7 @@
+url: https://github.com/ximi-chen/dsh-supersede
+name: ximi-chen/dsh-supersede
+category: ui
+icon: https://raw.githubusercontent.com/ximi-chen/dsh-supersede/main/icon.png
+description:
+  en: 'Adds a per-session Supersede switch to the composer: sending a message while a turn runs cancels that turn and opens the next one with the message. Idle sends run normally; Busy Enter must be queue.'
+  zh: '输入框工具行左侧的按会话「接替」开关：运行中发送消息会中止当前轮，并由这条消息开启下一轮；空闲发送不受影响，需要忙碌回车为「排队」。'

@@ -1,0 +1,61 @@
+{
+  "name": "dsh-supersede",
+  "version": "0.1.0",
+  "description": "Per-session Supersede switch for the DeepSeek Harness composer: a message sent while a turn runs cancels that turn and opens the next one with it; idle sends stay normal.",
+  "license": "MIT",
+  "author": "ximi-chen",
+  "type": "module",
+  "homepage": "https://github.com/ximi-chen/dsh-supersede#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ximi-chen/dsh-supersede.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ximi-chen/dsh-supersede/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "supersede",
+    "composer",
+    "queue"
+  ],
+  "engines": {
+    "dsh": ">=0.2.2-rc.5 <0.3.0-0"
+  },
+  "scripts": {
+    "test": "node --test client.core.test.js",
+    "index": "node scripts/make-index.mjs"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "client.core.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "icon.png",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  }
+}

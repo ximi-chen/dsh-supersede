@@ -26,6 +26,7 @@ function snapshot(overrides = {}) {
     canCancel: true,
     queue: [],
     seen: new Set(),
+    ineligible: new Set(),
     cancelInFlight: false,
     ...overrides,
   }
@@ -34,7 +35,7 @@ function snapshot(overrides = {}) {
 const queueIds = (queue) => queue.map((row) => row.id)
 
 test('registers a package-local core chunk under the bundle id', () => {
-  assert.equal(registration.id, '@local/dsh-supersede')
+  assert.equal(registration.id, 'dsh-supersede')
   assert.equal(registration.chunk, 'client.core.js')
 })
 
@@ -77,6 +78,49 @@ test('enabled but idle: records the new row without cancelling, and it never fir
     cancel: false,
     seen: queueIds(queue),
     reason: DECISION_REASONS.noNewRow,
+  })
+})
+
+test('a row that opened the running turn is ineligible: recorded, never cancelled', () => {
+  // The idle submission becomes visible in the same snapshot that already
+  // reports `running: true`; the row is the one that started this turn, so
+  // cancelling would stop the message the user just sent.
+  const queue = [{ id: 'm1' }]
+  const decision = decideSupersede(snapshot({
+    queue,
+    ineligible: new Set(['m1']),
+  }))
+  assert.deepEqual(decision, {
+    cancel: false,
+    seen: queueIds(queue),
+    reason: DECISION_REASONS.ineligible,
+  })
+
+  // It stays recorded, so a later snapshot with the same row cannot fire it.
+  const later = decideSupersede(snapshot({
+    queue,
+    seen: new Set(decision.seen),
+    ineligible: new Set(['m1']),
+  }))
+  assert.deepEqual(later, {
+    cancel: false,
+    seen: queueIds(queue),
+    reason: DECISION_REASONS.noNewRow,
+  })
+})
+
+test('a batch with one ineligible and one eligible new row still cancels once', () => {
+  // Two submissions can surface together: the idle one that opened this turn
+  // and one sent while it ran. The eligible row is the supersede trigger.
+  const queue = [{ id: 'm1' }, { id: 'm2' }]
+  const decision = decideSupersede(snapshot({
+    queue,
+    ineligible: new Set(['m1']),
+  }))
+  assert.deepEqual(decision, {
+    cancel: true,
+    seen: queueIds(queue),
+    reason: DECISION_REASONS.cancel,
   })
 })
 

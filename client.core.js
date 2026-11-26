@@ -1,12 +1,12 @@
 /**
- * Pure decision core of @local/dsh-supersede, delivered as a package-local
+ * Pure decision core of dsh-supersede, delivered as a package-local
  * client chunk loaded with `require.async('./client.core.js')`.
  *
  * Classic script on purpose: the shell's module loader registers lazy factories,
  * not ES modules. The factory has no dependencies and no side effects.
  */
 window.__ModuleLoader__.load({
-  id: '@local/dsh-supersede',
+  id: 'dsh-supersede',
   chunk: 'client.core.js',
   factory(require) {
     /** Stable names for the literals the decision can report. */
@@ -18,12 +18,18 @@ window.__ModuleLoader__.load({
       idle: 'idle',
       inFlight: 'in-flight',
       noNewRow: 'no-new-row',
+      ineligible: 'ineligible',
       cancel: 'cancel',
     }
 
     /**
      * Decide whether one observed queue snapshot should cancel the running turn.
      * @param {object} input plain snapshot
+     * @param {ReadonlySet<string>} [input.ineligible] ids of new rows that may
+     *   be recorded but must never trigger: either their message started the
+     *   running turn (an idle submission), or the caller could not prove a turn
+     *   was already open before they appeared. Absent means every new row is a
+     *   candidate.
      * @returns {{ cancel: boolean, seen: readonly string[], reason: string }}
      */
     function decideSupersede(input) {
@@ -36,8 +42,10 @@ window.__ModuleLoader__.load({
       if (input.enabled === false) return record(DECISION_REASONS.off)
       if (input.running === false) return record(DECISION_REASONS.idle)
       if (input.cancelInFlight === true) return record(DECISION_REASONS.inFlight)
-      if (!ids.some((id) => !input.seen.has(id))) {
-        return record(DECISION_REASONS.noNewRow)
+      const fresh = ids.filter((id) => !input.seen.has(id))
+      if (fresh.length === 0) return record(DECISION_REASONS.noNewRow)
+      if (!fresh.some((id) => input.ineligible?.has(id) !== true)) {
+        return record(DECISION_REASONS.ineligible)
       }
       return { cancel: true, seen: ids, reason: DECISION_REASONS.cancel }
     }

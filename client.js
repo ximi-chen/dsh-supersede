@@ -1,9 +1,11 @@
 /**
- * Client half of @local/dsh-supersede.
+ * Client half of dsh-supersede.
  *
  * While the switch is on and the session is running, the first observed
- * `next-turn` queue row cancels the running turn; the Host keeps the inbox, so
- * that row opens the next turn by itself.
+ * `next-turn` queue row *submitted while a turn was already running* cancels
+ * that turn; the Host keeps the inbox, so that row opens the next turn by
+ * itself. A row that itself opened the running turn (a message sent while the
+ * session was idle) is never a trigger: it is recorded and left to run.
  *
  * An accepted cancel arms a per-session, in-memory ledger for the turn that was
  * open at that moment; that turn's `turnTail` then shows 「已被新消息接替」 once
@@ -20,7 +22,7 @@
  * plugin's display metadata and is not imported by this file.
  */
 window.__ModuleLoader__.load({
-  id: '@local/dsh-supersede',
+  id: 'dsh-supersede',
   factory(require) {
     const React = require('react')
     const h = React.createElement
@@ -37,6 +39,8 @@ window.__ModuleLoader__.load({
     const MARKER_ENTRY_ID = 'dsh-supersede.marker'
     /** How long the transient cancel-failure line stays on screen. */
     const FAILURE_VISIBLE_MS = 5000
+    /** Upper bound on remembered idle-submission request ids (page-local). */
+    const MAX_IDLE_REQUESTS = 512
 
     /** Simplified Chinese dictionary (the key-set source of truth). */
     const zh = {
@@ -80,8 +84,12 @@ window.__ModuleLoader__.load({
      * is outstanding for this session; `ledger` says which turns, if any, this
      * session's accepted cancels marked (the core's `Ledger` shape);
      * `selfWake` holds the prompt request ids this plugin minted to restart
-     * the queue, so its own wake rows are never mistaken for a new message.
-     * @typedef {{ enabled: boolean, seen: Set<string>, primed: boolean, inFlight: boolean, ledger: { armed: readonly number[], marked: readonly number[] } | null, selfWake: Set<string> }} SessionRecord
+     * the queue, so its own wake rows are never mistaken for a new message;
+     * `lastOpenTurn` remembers which turn was open at the previous observation
+     * (null when none) and `idleRequests` remembers the request ids this client
+     * submitted while the session was idle, so the row they opened can never
+     * supersede its own turn.
+     * @typedef {{ enabled: boolean, seen: Set<string>, primed: boolean, inFlight: boolean, ledger: { armed: readonly number[], marked: readonly number[] } | null, selfWake: Set<string>, lastOpenTurn: number | null, idleRequests: Set<string> }} SessionRecord
      */
     const sessions = new Map()
     /** Components watching the map; one notification per change, no payload. */
@@ -140,10 +148,38 @@ window.__ModuleLoader__.load({
           inFlight: false,
           ledger: null,
           selfWake: new Set(),
+          lastOpenTurn: null,
+          idleRequests: new Set(),
         }
         sessions.set(key, state)
       }
       return state
+    }
+
+    /**
+     * Remember which locally submitted messages were sent while the session was
+     * idle. `PendingSubmission.placement` is fixed by the Session at submit
+     * time (`transcript` = idle, no turn was running), so its queue row opens
+     * the turn and must never supersede that same turn. The request id is kept
+     * after the echo retires, because the row can become visible a frame later.
+     * @param {SessionRecord} state
+     * @param {readonly { requestId?: unknown, placement?: unknown }[] | undefined} pendingSubmissions
+     * @returns {void}
+     */
+    function rememberIdleRequests(state, pendingSubmissions) {
+      for (const submission of pendingSubmissions ?? []) {
+        if (submission?.placement !== 'transcript') continue
+        const requestId = submission.requestId
+        if (typeof requestId !== 'string') continue
+        // Refresh insertion order so the cap retires the least recent first.
+        state.idleRequests.delete(requestId)
+        state.idleRequests.add(requestId)
+      }
+      while (state.idleRequests.size > MAX_IDLE_REQUESTS) {
+        const oldest = state.idleRequests.values().next().value
+        if (oldest === undefined) break
+        state.idleRequests.delete(oldest)
+      }
     }
 
     /**
@@ -431,6 +467,11 @@ window.__ModuleLoader__.load({
       const gated = busyEnterBehavior === 'steer'
       const queue = useInput((state) => state.queue)
       const running = useSession((state) => state.running) ?? false
+      // Local submission echoes carry the Session's own placement decision
+      // (`transcript` when it saw the session idle at submit time). One of them
+      // is what tells a row that *opened* the turn apart from one queued
+      // behind an already-running turn.
+      const pendingSubmissions = useSession((state) => state.pendingSubmissions) ?? []
       const denied = useAccess('session/cancel') === false
       // The turn that is open right now. A cancel is accepted for *this*
       // number, which is what lets the marker tell our cancel apart from the
@@ -496,6 +537,16 @@ window.__ModuleLoader__.load({
         if (sessionId === undefined || sessionId === null) return
 
         const state = stateOf(sessionId)
+        // Both facts below are sampled before the verdict: the placement of
+        // this client's accepted submissions, and whether a turn was already
+        // open at the *previous* observation. A row that became visible in the
+        // same observation as its turn is the row that opened that turn, so it
+        // cannot supersede it — an idle send must behave exactly like stock.
+        rememberIdleRequests(state, pendingSubmissions)
+        const previousOpenTurn = state.lastOpenTurn
+        const sameTurnAlreadyOpen = openTurn !== null && previousOpenTurn === openTurn
+        state.lastOpenTurn = openTurn === 0 ? null : openTurn
+
         const allRows = queue ?? []
         // Rows this plugin re-submitted to restart the queue are delivery
         // machinery, not a new user message: keep them out of the verdict.
@@ -510,6 +561,18 @@ window.__ModuleLoader__.load({
         }
 
         const newRows = visible.filter((row) => !state.seen.has(row.id))
+        // Rows that must never trigger: the ones this client submitted while
+        // the session was idle (the local echo says `transcript`), and any new
+        // row whose turn was not already open at the previous observation —
+        // that row may be the one that opened it. When in doubt this queues
+        // instead of interrupting. Both kinds are still recorded by the
+        // decision below, so they cannot fire on a later render either.
+        const ineligible = new Set()
+        for (const row of newRows) {
+          if (!sameTurnAlreadyOpen || state.idleRequests.has(row.source?.rpcId)) {
+            ineligible.add(row.id)
+          }
+        }
         const decision = core.decideSupersede({
           enabled,
           busyEnter: busyEnterBehavior,
@@ -517,6 +580,7 @@ window.__ModuleLoader__.load({
           canCancel: !denied,
           queue: visible,
           seen: state.seen,
+          ineligible,
           cancelInFlight: state.inFlight,
         })
         // The decision's `seen` is the whole observed snapshot, so this records
@@ -526,13 +590,19 @@ window.__ModuleLoader__.load({
         state.seen = new Set(decision.seen)
         if (!decision.cancel) return
 
+        // Only the eligible rows are "the message that superseded": the
+        // ineligible ones already belong to the turn being cancelled (or are
+        // not this client's trigger), so they must not be re-delivered too.
+        const supersedeRows = newRows.filter((row) => !ineligible.has(row.id))
+
         // This Host build does not resume pending inbox work after a user
         // cancel: the aborted driver ends and the queued rows would sit idle.
         // Only a prompt admitted after the abort latches a wake, so a supersede
         // also re-delivers the plain-text rows it is about to strand. Rows with
         // attachments cannot be re-expressed as prompt parts; when none of the
-        // new rows is plain text, leave the stock queue behaviour untouched.
-        if (!newRows.some((row) => isTextOnly(row.content))) {
+        // triggering rows is plain text, leave the stock queue behaviour
+        // untouched.
+        if (!supersedeRows.some((row) => isTextOnly(row.content))) {
           console.warn('dsh-supersede: no text-only row can restart the turn; leaving the queue untouched')
           return
         }
@@ -568,7 +638,7 @@ window.__ModuleLoader__.load({
               state.ledger = core.armLedger(ledgerOf(state), armedFor)
               notifySessionState()
             }
-            const stranded = await reopenRows.current(newRows)
+            const stranded = await reopenRows.current(supersedeRows)
             if (stranded.length === 0) return
             // The row left the queue but could not be re-submitted: give the
             // words back rather than dropping them silently.
@@ -589,7 +659,7 @@ window.__ModuleLoader__.load({
           .finally(() => {
             state.inFlight = false
           })
-      }, [queue, running, denied, enabled, busyEnterBehavior, openTurn, sessionId])
+      }, [queue, running, denied, enabled, busyEnterBehavior, openTurn, sessionId, pendingSubmissions])
 
       // Hooks are all above this line; the following are plain early exits.
       // No session, no retained binding, or no cancel permission means the
@@ -752,8 +822,8 @@ window.__ModuleLoader__.load({
         // even when this cleanup never runs.
         ctx.effect(() => {
           const tag = document.createElement('style')
-          tag.dataset.plugin = '@local/dsh-supersede'
-          tag.dataset.pluginCss = '@local/dsh-supersede/styles.css'
+          tag.dataset.plugin = 'dsh-supersede'
+          tag.dataset.pluginCss = 'dsh-supersede/styles.css'
           tag.textContent = CSS
           document.head.appendChild(tag)
           return () => {
