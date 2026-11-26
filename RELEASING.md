@@ -75,7 +75,7 @@ console.log('index ok')
 
 1. Fork `awesome-dsh-plugin/awesome-dsh-plugin`。
 2. 新建 `data/plugins/ximi-chen__dsh-supersede.yml`，内容复制 `market/ximi-chen__dsh-supersede.yml` 的全部内容（不要加注释、不要加别的文件）。
-3. 提交、推送、开 PR。PR 标题可用 `Add dsh-supersede`，正文按仓库的 `pr-body.md` 模板勾选。
+3. 提交、推送、开 PR。PR 标题可用 `Add dsh-supersede`，正文从 [`market/PR_BODY.md`](market/PR_BODY.md) 复制，补上仓库创建时间和 `dsh-plugin` topic 两项勾选。
 4. CI 会检查：仓库存在且未归档、`package.json` 声明 `dsh.bundle`、仓库创建满 **1 天**、YAML 文件名/URL/category/description 合法、README 生成一致。
 5. 合并后列表、站点和 dshmarket 会自动收录（通常一天内）。
 
