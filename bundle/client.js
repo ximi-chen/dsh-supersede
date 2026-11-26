@@ -46,6 +46,7 @@ window.__ModuleLoader__.load({
       'toggle.ariaLabel': '接替：运行中发送消息会立即中止当前轮，并用这条消息开启新一轮。',
       'toggle.disabled.steer': '忙碌回车为「插话」时不适用接替',
       'toggle.failure': '接替失败，消息仍在排队',
+      'toggle.failure.draft': '接替失败，文字已放回输入框',
       'marker.text': '已被新消息接替',
     }
 
@@ -57,6 +58,7 @@ window.__ModuleLoader__.load({
       'toggle.ariaLabel': 'Supersede: while a turn is running, sending a message cancels the current turn and starts a new one.',
       'toggle.disabled.steer': 'Not available while busy Enter is set to steer',
       'toggle.failure': 'Supersede failed; the message is still queued.',
+      'toggle.failure.draft': 'Supersede failed; the text is back in the composer.',
       'marker.text': 'Superseded by a new message',
     }
 
@@ -76,8 +78,10 @@ window.__ModuleLoader__.load({
      * observation of this page/plugin load already ran (its rows are a
      * baseline, never a supersede request); `inFlight` says one cancel request
      * is outstanding for this session; `ledger` says which turns, if any, this
-     * session's accepted cancels marked (the core's `Ledger` shape).
-     * @typedef {{ enabled: boolean, seen: Set<string>, primed: boolean, inFlight: boolean, ledger: { armed: readonly number[], marked: readonly number[] } | null }} SessionRecord
+     * session's accepted cancels marked (the core's `Ledger` shape);
+     * `selfWake` holds the prompt request ids this plugin minted to restart
+     * the queue, so its own wake rows are never mistaken for a new message.
+     * @typedef {{ enabled: boolean, seen: Set<string>, primed: boolean, inFlight: boolean, ledger: { armed: readonly number[], marked: readonly number[] } | null, selfWake: Set<string> }} SessionRecord
      */
     const sessions = new Map()
     /** Components watching the map; one notification per change, no payload. */
@@ -135,6 +139,7 @@ window.__ModuleLoader__.load({
           primed: false,
           inFlight: false,
           ledger: null,
+          selfWake: new Set(),
         }
         sessions.set(key, state)
       }
@@ -149,6 +154,51 @@ window.__ModuleLoader__.load({
      */
     function ledgerOf(state) {
       return state.ledger ?? core.EMPTY_LEDGER
+    }
+
+    /**
+     * Whether one queue row can be re-submitted verbatim: plain text only, so
+     * the re-delivery carries the same words and no attachment reference that
+     * a new prompt cannot express.
+     * @param {readonly object[] | undefined} content
+     * @returns {boolean}
+     */
+    function isTextOnly(content) {
+      return Array.isArray(content) && content.length > 0
+        && content.every((block) => block !== null && typeof block === 'object'
+          && block.type === 'text' && typeof block.text === 'string' && block.text.trim() !== '')
+    }
+
+    /**
+     * Plain text of one text-only row, for a draft fallback and for the
+     * transient copy.
+     * @param {readonly object[]} content
+     * @returns {string}
+     */
+    function textOf(content) {
+      return content.map((block) => block.text).join('\n\n')
+    }
+
+    /**
+     * The prompt parts for one text-only row.
+     * @param {readonly object[]} content
+     * @returns {{ type: 'text', text: string }[]}
+     */
+    function textPartsOf(content) {
+      return content.map((block) => ({ type: 'text', text: block.text }))
+    }
+
+    /**
+     * A prompt request id this plugin owns. The Host echoes it on the durable
+     * user message, which is how the self-wake row is recognized later.
+     * @returns {string}
+     */
+    function newRequestId() {
+      try {
+        return window.crypto.randomUUID()
+      } catch {
+        return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+      }
     }
 
     /** @param {unknown} sessionId @returns {boolean} */
@@ -400,27 +450,33 @@ window.__ModuleLoader__.load({
       // closure on every render; a ref keeps it out of the observation deps.
       const cancelTurn = React.useRef(props.cancelTurn)
       cancelTurn.current = props.cancelTurn
+      // Same for the re-delivery face: its identity changes per session cell.
+      const reopenRows = React.useRef(props.reopenRows)
+      reopenRows.current = props.reopenRows
+      // Async settles must not write into another session's composer.
+      const liveSession = React.useRef(sessionId)
+      liveSession.current = sessionId
 
       // A cancel that settles `{ ok: false }` (or throws) must be visible, but
       // only for a moment: the message is still queued and the user may act.
-      const [failure, setFailure] = React.useState(false)
+      const [failure, setFailure] = React.useState(null)
       const failureTimer = React.useRef(null)
       // The observation effect calls this without taking it as a dependency;
       // assigning the ref each render keeps the latest `setFailure` in play.
       const showFailure = React.useRef(() => {})
-      showFailure.current = () => {
-        setFailure(true)
+      showFailure.current = (key = 'toggle.failure') => {
+        setFailure(key)
         if (failureTimer.current !== null) clearTimeout(failureTimer.current)
         failureTimer.current = setTimeout(() => {
           failureTimer.current = null
-          setFailure(false)
+          setFailure(null)
         }, FAILURE_VISIBLE_MS)
       }
 
       // A reused cell must not carry another session's failure line, and an
       // unmount must not leave a timer that calls `setFailure` on nothing.
       React.useEffect(() => {
-        setFailure(false)
+        setFailure(null)
         if (failureTimer.current !== null) {
           clearTimeout(failureTimer.current)
           failureTimer.current = null
@@ -440,21 +496,26 @@ window.__ModuleLoader__.load({
         if (sessionId === undefined || sessionId === null) return
 
         const state = stateOf(sessionId)
+        const allRows = queue ?? []
+        // Rows this plugin re-submitted to restart the queue are delivery
+        // machinery, not a new user message: keep them out of the verdict.
+        const visible = allRows.filter((row) => !state.selfWake.has(row.source?.rpcId))
         if (!state.primed) {
           // First observation after this page/plugin load: rows already in the
           // Host inbox were queued before the plugin watched, so they are a
           // baseline (normally empty). Record them and never retroactively fire.
           state.primed = true
-          state.seen = new Set((queue ?? []).map((row) => row.id))
+          state.seen = new Set(visible.map((row) => row.id))
           return
         }
 
+        const newRows = visible.filter((row) => !state.seen.has(row.id))
         const decision = core.decideSupersede({
           enabled,
           busyEnter: busyEnterBehavior,
           running,
           canCancel: !denied,
-          queue: queue ?? [],
+          queue: visible,
           seen: state.seen,
           cancelInFlight: state.inFlight,
         })
@@ -464,6 +525,17 @@ window.__ModuleLoader__.load({
         // retroactively fire on rows that were already queued.
         state.seen = new Set(decision.seen)
         if (!decision.cancel) return
+
+        // This Host build does not resume pending inbox work after a user
+        // cancel: the aborted driver ends and the queued rows would sit idle.
+        // Only a prompt admitted after the abort latches a wake, so a supersede
+        // also re-delivers the plain-text rows it is about to strand. Rows with
+        // attachments cannot be re-expressed as prompt parts; when none of the
+        // new rows is plain text, leave the stock queue behaviour untouched.
+        if (!newRows.some((row) => isTextOnly(row.content))) {
+          console.warn('dsh-supersede: no text-only row can restart the turn; leaving the queue untouched')
+          return
+        }
 
         state.inFlight = true
         // Captured before the request leaves: the ledger must name the turn
@@ -478,10 +550,10 @@ window.__ModuleLoader__.load({
           showFailure.current()
           return
         }
-        // Fire and settle: never await here, never retry. The Host keeps the
-        // inbox, so the queued message opens the next turn on its own.
+        // Fire and settle: never retry the cancel. Once accepted, re-deliver
+        // the triggering message so the queued turn actually starts.
         Promise.resolve(request)
-          .then((result) => {
+          .then(async (result) => {
             if (result !== undefined && result !== null && result.ok === false) {
               console.warn('dsh-supersede: cancel failed', result.error && result.error.code)
               // The queued message did not supersede anything: say so, and
@@ -492,9 +564,23 @@ window.__ModuleLoader__.load({
             // Accepted: a void request or a non-failing result. Arm until that
             // turn closes; a failed cancel leaves the ledger untouched, so it
             // can never mark a turn.
-            if (armedFor === null || armedFor === undefined) return
-            state.ledger = core.armLedger(ledgerOf(state), armedFor)
-            notifySessionState()
+            if (armedFor !== null && armedFor !== undefined) {
+              state.ledger = core.armLedger(ledgerOf(state), armedFor)
+              notifySessionState()
+            }
+            const stranded = await reopenRows.current(newRows)
+            if (stranded.length === 0) return
+            // The row left the queue but could not be re-submitted: give the
+            // words back rather than dropping them silently.
+            console.warn('dsh-supersede: could not re-submit the message; restored the draft')
+            if (liveSession.current === sessionId) {
+              showFailure.current('toggle.failure.draft')
+              try {
+                props.inputActions.setDraft(stranded.join('\n\n'))
+              } catch (error) {
+                console.warn('dsh-supersede: could not restore the draft', error)
+              }
+            }
           })
           .catch((error) => {
             console.warn('dsh-supersede: cancel failed', error)
@@ -575,7 +661,7 @@ window.__ModuleLoader__.load({
               className: 'dsh-supersede-failure',
               'data-dsh-supersede': 'failure',
             },
-            t('toggle.failure'),
+            t(failure),
           )
           : null,
       )
@@ -697,6 +783,57 @@ window.__ModuleLoader__.load({
           return binding.session.cancel()
         }
 
+        /**
+         * Re-submit plain-text queue rows after an accepted cancel. The Host
+         * does not resume pending inbox work after a user cancel, so the
+         * aborted driver would leave them idle; a prompt admitted now latches
+         * the wake that starts the next turn. Rows are taken back first so the
+         * same words never run twice. Non-text rows stay queued and are claimed
+         * by that wake in FIFO order.
+         * @param {unknown} sessionId
+         * @param {readonly object[]} rows
+         * @returns {Promise<string[]>} texts that could not be re-submitted
+         */
+        const reopenRows = async (sessionId, rows) => {
+          const binding = ctx.sessions.binding(sessionId)
+          if (binding === undefined) return []
+          const state = stateOf(sessionId)
+          const failed = []
+          for (const row of rows) {
+            if (!isTextOnly(row.content)) continue
+            const requestId = newRequestId()
+            // Recorded before the prompt so its echo can never look like a new
+            // user message and trigger a second cancel.
+            state.selfWake.add(requestId)
+            let removed
+            try {
+              removed = await binding.session.updateQueue(row.id, { kind: 'remove' })
+            } catch (error) {
+              console.warn('dsh-supersede: could not take back the queued row', error)
+              state.selfWake.delete(requestId)
+              continue
+            }
+            if (removed === undefined || removed.ok !== true) {
+              // Something claimed it already: the message is not lost.
+              state.selfWake.delete(requestId)
+              continue
+            }
+            try {
+              const sent = await binding.session.prompt(textPartsOf(row.content), 'queue', undefined, requestId)
+              if (sent !== undefined && sent.ok === false) {
+                console.warn('dsh-supersede: re-delivery rejected', sent.error && sent.error.code)
+                state.selfWake.delete(requestId)
+                failed.push(textOf(row.content))
+              }
+            } catch (error) {
+              console.warn('dsh-supersede: re-delivery failed', error)
+              state.selfWake.delete(requestId)
+              failed.push(textOf(row.content))
+            }
+          }
+          return failed
+        }
+
         ctx.slots.inject(SLOT, () => ctx.slots.register({
           name: SLOT,
           id: ENTRY_ID,
@@ -706,6 +843,8 @@ window.__ModuleLoader__.load({
             core,
             busyEnter,
             cancelTurn: () => cancelTurn(sessionId),
+            // Re-delivery for the queue rows the cancel would otherwise strand.
+            reopenRows: (rows) => reopenRows(sessionId, rows),
             // The switch is only offered while the session still has a face to
             // cancel through; a missing binding is hidden, not shown broken.
             hasBinding: () => ctx.sessions.binding(sessionId) !== undefined,

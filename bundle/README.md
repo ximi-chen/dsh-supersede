@@ -25,6 +25,15 @@ only; a reload keeps it, and other sessions are unaffected.
    message is merged into the running turn instead of the next-turn queue, so
    there is nothing to supersede and the switch is disabled.
 
+**Why the message is re-delivered.** This DSH build keeps pending queue rows
+after a user cancel, but the aborted turn ends without resuming them, so a
+plain cancel would leave your message sitting in the queue. After an accepted
+cancel the plugin therefore takes the triggering plain-text rows back from the
+queue and re-submits them, which is what actually starts the next turn. The
+words, order and model context are the same; the row gets a new message
+identity. A message carrying attachments or images is not superseded: it stays
+queued and the running turn continues.
+
 The switch state lives in this browser's localStorage, per session
 (`dsh-supersede:enabled:<sessionId>`); it is not synced across devices. The
 superseded-turn label is in memory only: reloading the page drops it, and the
@@ -50,6 +59,12 @@ the label disappear, and sending returns to stock behaviour.
 1. 发送按钮仍显示**「排队」**。核心对话包没有改动，输入框仍按原生投递方式提示。
 2. 仅当**忙碌回车**为「排队」时生效。设为「插话」时消息会并入正在运行的轮次，
    而不是下一轮队列，没有可接替的队列行，因此开关禁用。
+
+**为什么消息会被重新投递。** 这一版 DSH 在用户取消后会把队列行保留下来，但被中止
+的轮次直接收尾，不会自己续跑队列——只取消的话，你的消息会一直躺在队列里。所以插件
+在取消被接受后，把触发这次接替的纯文本队列行取回并重新投递一次，新一轮才真正跑起
+来。文字、顺序和模型上下文不变，只是这一行会换一个新的消息身份。带附件或图片的消息
+不参与接替：它会留在队列里，当前轮继续跑。
 
 开关状态按会话存在本机浏览器的 localStorage 里
 （`dsh-supersede:enabled:<sessionId>`），不跨设备同步。「已被新消息接替」只
